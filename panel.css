@@ -1613,13 +1613,41 @@ tbody tr.virtual-spacer td {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 6px 10px;
 }
 
 .card-heading > span {
   color: var(--muted);
-  font: 10px/1 var(--mono);
+  font: 10px/1.4 var(--mono);
+}
+
+.card-heading > span#payloadMeta {
+  margin-left: auto;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.payload-view-toggle {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 1.4;
+  cursor: pointer;
   white-space: nowrap;
+}
+
+.payload-view-toggle:hover {
+  border-color: var(--accent);
+}
+
+.payload-view-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 #detailsContent,

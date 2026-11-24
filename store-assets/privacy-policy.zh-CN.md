@@ -50,4 +50,4 @@ MQTT 连接和报文只保存在当前页面与 DevTools 会话的浏览器内�
 
 ## 8. 联系方式
 
-如有隐私或数据处理问题，请通过项目的 [GitHub Issues](https://github.com/ganghao1024/mqtt-local-devtools/issues) 联系开发者。
+如有隐私或数据处理问题，请通过项目的 [GitHub Issues](https://github.com/zzguang83325/mqtt-local-devtools/issues) 联系开发者。

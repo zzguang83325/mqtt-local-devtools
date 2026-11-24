@@ -78,7 +78,9 @@
       const broker = new URL(connectionUrl);
       const source = new URL(sourceUrl);
       if (!["ws:", "wss:"].includes(broker.protocol) || !["http:", "https:"].includes(source.protocol)) return false;
-      return isLocalDevelopmentUrl(sourceUrl) || broker.hostname === source.hostname;
+      // Broker hostname is intentionally not compared with the page hostname:
+      // pages may legitimately connect to a broker on another host.
+      return true;
     } catch {
       return false;
     }

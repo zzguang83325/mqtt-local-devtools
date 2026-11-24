@@ -101,11 +101,17 @@
           emitConnection(state, state.socket.readyState === NativeWebSocket.OPEN ? "open" : "connecting");
         }
 
+        // Compressed payloads are expanded before the event leaves the page,
+        // because only this layer still owns the original bytes.
+        const enriched = typeof decoder.decompressPacket === "function"
+          ? await decoder.decompressPacket(packet)
+          : packet;
+
         emit("packet", {
           connectionId: state.id,
           connectionUrl: state.socket.url || state.url,
           direction,
-          packet
+          packet: enriched
         });
       }
     } catch (error) {

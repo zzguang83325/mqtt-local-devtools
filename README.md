@@ -2,7 +2,35 @@
 
 一个用于本地、测试和线上页面的 Chrome / Edge DevTools 网络调试插件。它能查看页面已有的 MQTT over WebSocket 连接和报文，按完整 Topic 分析连续消息的字段变化，也能导入浏览器复制的 cURL，编辑参数、请求头和 Body 后手动发送 HTTP 请求。MQTT 模块不会创建第二个 MQTT 客户端。
 
-当前版本：**v0.8.6** · [下载扩展安装包](https://github.com/ganghao1024/mqtt-local-devtools/releases/download/v0.8.6/mqtt-local-devtools-0.8.6-cws.zip) · [版本更新说明](https://github.com/ganghao1024/mqtt-local-devtools/releases/tag/v0.8.6)
+当前版本：**v0.8.7** · [下载扩展安装包](https://github.com/zzguang83325/mqtt-local-devtools/releases/download/v0.8.7/mqtt-local-devtools-0.8.7-cws.zip) · [版本更新说明](https://github.com/zzguang83325/mqtt-local-devtools/releases/tag/v0.8.7)
+
+## 本 Fork 的修改（v0.8.7）
+
+基于上游 [ganghao1024/mqtt-local-devtools](https://github.com/ganghao1024/mqtt-local-devtools) v0.8.6，本 Fork 做了以下修改：
+
+### 1. 取消 Broker 与页面域名一致的限制
+
+上游在线上页面要求 MQTT Broker 的 hostname 与页面 hostname 相同，否则静默丢弃连接和报文，导致跨域 Broker 的消息完全看不到。本 Fork 取消该比对，页面通过 `ws://` / `wss://` 实际建立的 MQTT 连接都会显示，不再区分 Broker 与页面是否同域。
+
+涉及文件：`panel-runtime.js`、`tests/panel-runtime.test.js`。
+
+### 2. 自动检测并解压压缩 Payload
+
+二进制 Payload 常以压缩形式传输（如 gzip），原面板只能显示十六进制。本 Fork 在解码器内按魔数识别 gzip（`1f 8b 08`）与 zlib（`78 01` / `78 9c` / `78 da`），使用浏览器原生 `DecompressionStream` 解压，无需第三方依赖：
+
+- 报文列表预览与详情默认显示解压后的文本，合法 JSON 自动格式化，中文正常显示
+- 详情提供“查看原始字节 / 查看解压内容”切换，保留原始十六进制
+- 解压失败时显示原因并保留原始预览；解压后仍是二进制时继续显示 hex
+- 解压上限 4 MiB，避免压缩炸弹耗尽面板内存
+- 修正原始字节的缓存计量，避免 `Uint8Array` 序列化导致内存高估约 5 倍
+
+涉及文件：`mqtt-decoder.js`、`page-hook.js`、`panel.js`、`panel.html`、`panel.css`，新增 `tests/payload-compression.test.js`。
+
+### 3. 自动发布 Release
+
+新增 `.github/workflows/release.yml`：推送 `v*` 标签时自动运行测试、打包扩展 ZIP 并创建 GitHub Release。发布说明见[开发与发布](#开发与发布)。
+
+验证：`npm run check` 110 项测试通过（含新增 9 项压缩相关测试）。
 
 ![MQTT Local DevTools 面板](store-assets/screenshot-1280x800.png)
 
@@ -23,6 +51,7 @@
 - 解析 MQTT 3.1.1 与 MQTT 5.0 常用报文
 - 展示发送和接收的 CONNECT、PUBLISH、SUBSCRIBE、PING、ACK 等报文
 - 展示 Topic、QoS、retain、文本/JSON Payload 和二进制十六进制预览
+- 自动检测 gzip / zlib 压缩的 Payload 并解压显示，支持中文与 JSON 格式化；可通过"查看原始字节"切换回十六进制，解压失败时保留原始预览并说明原因
 - 按连接、方向、报文类型和关键词筛选
 - 左侧按 Topic 前三级自动分组并统计报文数，分组可展开到具体 Topic 并进行精确筛选
 - Topic、报文列表、报文详情三栏均可拖动分隔线调整宽度，宽度会自动保存；方向键可微调，双击分隔线恢复默认
@@ -53,7 +82,7 @@
 
 ### 从 GitHub Release 安装
 
-1. 在 [GitHub Releases](https://github.com/ganghao1024/mqtt-local-devtools/releases) 下载最新的 `mqtt-local-devtools-*-cws.zip`。
+1. 在 [GitHub Releases](https://github.com/zzguang83325/mqtt-local-devtools/releases) 下载最新的 `mqtt-local-devtools-*-cws.zip`。
 2. 解压 ZIP 文件。
 3. 打开 Chrome 的 `chrome://extensions` 或 Edge 的 `edge://extensions`。
 4. 开启“开发者模式”。
@@ -85,7 +114,7 @@
 - Topic 分组、缓存总数与实时速率增量维护；全局搜索文本在接收时预计算，并带约 150 ms 防抖。
 - 页面侧使用自适应环形缓冲区：待机时 1000 条或 8 MiB，DevTools 已连接时缩短为 200 条或 2 MiB；DevTools 面板独立保留 5000 条或 32 MiB。
 
-localhost、回环地址和局域网 IP（10.x、172.16–31.x、192.168.x 等）页面可以查看该页面连接到任意 hostname 的 MQTT Broker；线上页面仍要求 Broker 与来源页面的 hostname 相同，端口可不同。DevTools 底部及插件弹窗提供“GitHub 更新”入口，可跳转至最新发布版本。
+localhost、回环地址和局域网 IP（10.x、172.16–31.x、192.168.x 等）页面可以查看该页面连接到任意 hostname 的 MQTT Broker；线上页面同样不限制 Broker 的 hostname，页面实际创建的 MQTT over WebSocket 连接都会显示。DevTools 底部及插件弹窗提供“GitHub 更新”入口，可跳转至最新发布版本。
 
 连接列表只显示已确认使用 MQTT 的 WebSocket。确认依据包括 WebSocket 子协议包含 `mqtt`，或捕获到合法的 CONNECT / CONNACK 报文。本地开发模式会跨端口聚合，例如在一个 localhost 页面打开的 MQTT 面板中，也能看到另一个 localhost 端口建立的连接；线上页面不会跨站点聚合。
 
@@ -187,3 +216,44 @@ v0.8.6 已通过 101 项自动化测试和 7 组浏览器回归，包含倒序�
 MQTT、HTTP、故障分析和扩展弹窗共用 `design-tokens.css` 中的深色主题、文字、间距、焦点和控件尺寸；实际样式分别由 `panel.css`、`popup.css` 消费。主题沿用当前脉冲图标的深色底与蓝青色强调，统一主按钮、导航、选中状态和焦点。维护说明见 [界面设计规范](docs/design-system.md)。v0.8.6 包含模块键盘导航、可换行筛选、清晰的变化与冻结提示，安装包和版本说明见页面顶部链接。
 
 `npm run test:browser` 还会验证工作台在 1280、900、640px 宽度下的布局、导航焦点、HTTP 分隔条与弹窗。手动打包时请包含 `design-tokens.css` 和 `popup.css`。
+
+## 开发与发布
+
+### 本地发布流程
+
+扩展不需要编译，推送标签即触发自动发布：
+
+```bash
+# 1. 同步版本号：manifest.json、package.json、panel.html 底部、panel.js 回退值
+# 2. 确认测试通过
+npm run check
+
+# 3. 提交并推送
+git add -A
+git commit -m "feat: describe your change"
+git push origin main
+
+# 4. 打标签并推送，触发 Release 工作流
+git tag v0.8.7
+git push origin v0.8.7
+```
+
+标签必须与 `manifest.json` 中的 `version` 一致，否则工作流会失败并提示，避免发布内容与版本号不符。
+
+### 自动发布工作流
+
+`.github/workflows/release.yml` 在推送 `v*` 标签时执行：
+
+1. 检出代码并安装 Node.js 20
+2. 校验标签版本与 `manifest.json` 一致
+3. 运行 `npm run check`（语法检查 + 全部单元测试）
+4. 打包扩展 ZIP，排除开发与文档文件
+5. 用 runner 自带的 `gh` 创建 GitHub Release 并附加 ZIP
+
+打包内容包含 `manifest.json`、全部运行时 JS/CSS/HTML、`design-tokens.css`、`icons/`；排除 `tests/`、`docs/`、`store-assets/`、`.github/`、`package.json`、`README.md`、`.gitignore` 等非运行时文件。
+
+> 工作流使用 GitHub 内置的 `GITHUB_TOKEN` 发布，不需要额外配置 Secret。若仓库设置中把 `Workflow permissions` 限制为只读，需在 Settings → Actions → General 改为 `Read and write permissions`。
+
+### 手动触发
+
+工作流也支持 `workflow_dispatch`，可在 Actions 页面手动运行，用于补发或排查打包问题。

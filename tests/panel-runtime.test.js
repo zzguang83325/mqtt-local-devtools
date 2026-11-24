@@ -51,11 +51,11 @@ test("local development pages can observe MQTT brokers on other hostnames", () =
   }
 });
 
-test("remote pages retain hostname filtering and malformed URLs are rejected", () => {
+test("remote pages observe MQTT brokers on any hostname and malformed URLs are rejected", () => {
   for (const host of ["172.15.0.1", "172.32.0.1", "192.169.1.1", "203.0.113.10", "example.com", "localhost.example.com", "[2001:db8::1]"]) {
     const sourceUrl = `https://${host}:8443/app`;
     assert.equal(isLocalDevelopmentUrl(sourceUrl), false, host);
-    assert.equal(mqttConnectionMatchesSource("wss://broker.example.com/mqtt", sourceUrl), false, host);
+    assert.equal(mqttConnectionMatchesSource("wss://broker.example.com/mqtt", sourceUrl), true, host);
     assert.equal(mqttConnectionMatchesSource(`wss://${host}:8084/mqtt`, sourceUrl), true, host);
   }
   assert.equal(mqttConnectionMatchesSource("bad-url", "http://localhost:4300"), false);

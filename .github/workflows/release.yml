@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Resolve version
+        id: version
+        env:
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="$(node -p "require('./manifest.json').version")"
+            VERSION="v${VERSION}"
+          fi
+          MANIFEST_VERSION="$(node -p "require('./manifest.json').version")"
+          if [ "${VERSION}" != "v${MANIFEST_VERSION}" ]; then
+            echo "::error::Tag ${VERSION} does not match manifest.json version ${MANIFEST_VERSION}"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: ${VERSION}"
+
+      - name: Run checks
+        run: npm run check
+
+      - name: Build extension zip
+        id: build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION_NUMBER="${VERSION#v}"
+          ARCHIVE_NAME="mqtt-local-devtools-${VERSION_NUMBER}-cws.zip"
+          STAGE_DIR="release/stage"
+          rm -rf release
+          mkdir -p "${STAGE_DIR}/icons"
+
+          # Runtime files only. Tests, docs, store assets and CI definitions are
+          # intentionally excluded from the installable extension package.
+          cp manifest.json "${STAGE_DIR}/"
+          cp ./*.js ./*.css ./*.html "${STAGE_DIR}/"
+          cp icons/* "${STAGE_DIR}/icons/"
+
+          (
+            cd "${STAGE_DIR}"
+            zip -qr "../../${ARCHIVE_NAME}" .
+          )
+
+          echo "archive=${ARCHIVE_NAME}" >> "$GITHUB_OUTPUT"
+          unzip -l "${ARCHIVE_NAME}"
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          ARCHIVE: ${{ steps.build.outputs.archive }}
+        run: |
+          set -euo pipefail
+          if gh release view "${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${VERSION} already exists; replacing its asset."
+            gh release upload "${VERSION}" "${ARCHIVE}" --clobber --repo "${GITHUB_REPOSITORY}"
+          else
+            gh release create "${VERSION}" "${ARCHIVE}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${VERSION}" \
+              --generate-notes
+          fi
+          gh release view "${VERSION}" --repo "${GITHUB_REPOSITORY}"

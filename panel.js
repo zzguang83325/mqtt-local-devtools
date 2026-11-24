@@ -103,6 +103,7 @@ const state = {
   paneWidths: loadPaneWidths(),
   paused: false,
   pageHookReady: false,
+  payloadViewMode: "decompressed",
   connectionRenderSignature: "",
   topicRenderSignature: ""
 };
@@ -149,6 +150,7 @@ const elements = {
   rawDetailsContent: document.querySelector("#rawDetailsContent"),
   detailsContent: document.querySelector("#detailsContent"),
   payloadMeta: document.querySelector("#payloadMeta"),
+  payloadViewToggle: document.querySelector("#payloadViewToggle"),
   detailTime: document.querySelector("#detailTime"),
   detailDirection: document.querySelector("#detailDirection"),
   detailType: document.querySelector("#detailType"),
@@ -301,6 +303,18 @@ function packetTopicOrInfo(packet) {
 }
 
 function packetPayloadPreview(packet) {
+  // Prefer decompressed text so compressed frames are readable in the list too.
+  if (packet.decompressed?.text !== undefined) {
+    return packet.decompressed.text.replace(/\s+/g, " ").slice(0, 240);
+  }
+  if (packet.compression?.error) {
+    return "[" + String(packet.compression.format || "gzip").toUpperCase() + " 解压失败] "
+      + String(packet.payloadHex || "").slice(0, 180);
+  }
+  if (packet.decompressed?.encoding === "binary") {
+    return "[" + String(packet.compression?.format || "gzip").toUpperCase() + " 已解压，仍为二进制] "
+      + String(packet.decompressed.hex || "").slice(0, 180);
+  }
   if (packet.payloadText !== undefined) {
     return packet.payloadText.replace(/\s+/g, " ").slice(0, 240);
   }
@@ -312,6 +326,60 @@ function payloadPresentation(packet) {
   const size = Number.isFinite(packet.payloadSize)
     ? packet.payloadSize
     : new TextEncoder().encode(packet.payloadText || "").length;
+
+  // A compressed payload shows its decompressed form by default; the original
+  // bytes remain reachable through the view toggle.
+  if (packet.compression || packet.decompressed) {
+    const compression = packet.compression || {};
+    const inflated = packet.decompressed;
+    const label = String(compression.format || "gzip").toUpperCase();
+
+    if (state.payloadViewMode === "raw") {
+      return {
+        format: label + " 原始字节",
+        size,
+        text: packet.payloadHex || "(无原始字节预览)",
+        compressed: true,
+        meta: size + " bytes · " + label + " 压缩"
+      };
+    }
+
+    if (compression.error) {
+      return {
+        format: label + " 解压失败",
+        size,
+        text: "解压失败：" + compression.error + "\n\n原始十六进制预览：\n" + (packet.payloadHex || "(无)"),
+        compressed: true,
+        meta: size + " bytes · " + label + " · 解压失败"
+      };
+    }
+
+    if (inflated) {
+      let text = inflated.text;
+      let format = "TEXT";
+      if (inflated.encoding === "binary") {
+        format = "HEX";
+        text = inflated.hex || "(解压后仍是二进制)";
+      } else if (inflated.text) {
+        try {
+          text = JSON.stringify(JSON.parse(inflated.text), null, 2);
+          format = "JSON";
+        } catch {
+          format = "UTF-8";
+        }
+      } else {
+        format = "UTF-8";
+        text = "(解压后为空)";
+      }
+      return {
+        format: label + " → " + format,
+        size: inflated.size,
+        text: text + (inflated.truncated ? "\n\n… 解压内容超过展示上限，已截断" : ""),
+        compressed: true,
+        meta: size + " bytes → " + inflated.size + " bytes · " + label + " 已解压"
+      };
+    }
+  }
 
   if (packet.payloadText !== undefined) {
     if (packet.payloadEncoding === "utf-8" && packet.payloadText) {
@@ -391,6 +459,7 @@ function clearDetails() {
   elements.detailsEmpty.textContent = "点击一条报文查看完整内容";
   elements.metadataCard.classList.add("hidden");
   elements.payloadCard.classList.add("hidden");
+  if (elements.payloadViewToggle) elements.payloadViewToggle.classList.add("hidden");
   elements.rawDetailsCard.classList.add("hidden");
   elements.copyButton.disabled = true;
 }
@@ -415,12 +484,28 @@ function resetSourceTab(sourceTabId) {
 
 function searchableEventText(event) {
   const connection = state.connections.get(event.connectionId) || {};
+  // Raw compressed bytes are excluded: they serialize into a large numeric
+  // object that slows indexing without helping search.
+  const { payloadBytes, ...packet } = event.packet || {};
   return JSON.stringify({
     clientId: connection.clientId,
     url: connection.url,
     sourceTab: connection.sourceTab,
-    packet: event.packet
+    packet
   }).toLowerCase();
+}
+
+// Uint8Array serializes as {"0":31,"1":139,...}, which would overstate the
+// memory cost of compressed payloads by roughly 5x. Count the real byte length
+// plus a small structural allowance instead.
+function eventByteSize(event) {
+  const rawBytes = event?.packet?.payloadBytes;
+  if (!rawBytes || typeof rawBytes.length !== "number") {
+    return ringBufferApi.serializedByteLength(event);
+  }
+  const { payloadBytes, ...packet } = event.packet;
+  return ringBufferApi.serializedByteLength({ ...event, packet })
+    + rawBytes.length + 32;
 }
 
 function removeIndexedEvent(event) {
@@ -483,7 +568,7 @@ function consumeEvent(event, render = true) {
     state.connections.set(event.connectionId, { ...previous, ...patch });
   }
 
-  const byteSize = ringBufferApi.serializedByteLength(event);
+  const byteSize = eventByteSize(event);
   const removed = state.events.append(event, byteSize);
   removed.forEach(removeIndexedEvent);
   state.eventIds.add(event.id);
@@ -986,6 +1071,9 @@ function eventForDisplay(event) {
     payloadEncoding,
     payloadSize,
     payloadTruncated,
+    payloadBytes,
+    compression,
+    decompressed,
     ...mqtt
   } = event.packet;
   const payload = {
@@ -1004,6 +1092,36 @@ function eventForDisplay(event) {
   }
   if (payloadHex) payload.hexPreview = payloadHex;
 
+  // Raw compressed bytes are intentionally not serialized; the decompressed
+  // text is what makes an export useful.
+  if (compression) {
+    payload.compression = {
+      format: compression.format,
+      compressedSize: compression.compressedSize,
+      decompressedSize: compression.decompressedSize
+    };
+    if (compression.error) payload.compression.error = compression.error;
+    if (compression.truncated) payload.compression.truncated = true;
+  }
+  if (decompressed) {
+    payload.decompressed = {
+      encoding: decompressed.encoding,
+      size: decompressed.size
+    };
+    if (decompressed.text !== undefined) {
+      payload.decompressed.utf8 = decompressed.text;
+      if (decompressed.encoding === "utf-8" && decompressed.text) {
+        try {
+          payload.decompressed.json = JSON.parse(decompressed.text);
+        } catch {
+          // Decompressed content is readable text, but not JSON.
+        }
+      }
+    }
+    if (decompressed.truncated) payload.decompressed.truncated = true;
+    if (decompressed.encoding === "binary") payload.decompressed.hexPreview = decompressed.hex;
+  }
+
   return {
     time: new Date(event.timestamp).toISOString(),
     direction: event.direction,
@@ -1017,7 +1135,9 @@ function eventForDisplay(event) {
 }
 
 function selectEvent(event) {
+  const changedEvent = state.selectedEventId !== event.id;
   state.selectedEventId = event.id;
+  if (changedEvent) state.payloadViewMode = "decompressed";
   const packet = event.packet;
   const connection = state.connections.get(event.connectionId) || {};
   const presentation = payloadPresentation(packet);
@@ -1045,7 +1165,11 @@ function selectEvent(event) {
   elements.detailQos.textContent = String(packet.qos ?? "—");
   elements.detailClientId.textContent = connection.clientId || "—";
   elements.detailConnection.textContent = connection.url || event.connectionId || "—";
-  elements.payloadMeta.textContent = presentation.format + " · " + presentation.size + " bytes";
+  elements.payloadMeta.textContent = presentation.meta || (presentation.format + " · " + presentation.size + " bytes");
+  if (elements.payloadViewToggle) {
+    elements.payloadViewToggle.classList.toggle("hidden", presentation.compressed !== true);
+    elements.payloadViewToggle.textContent = state.payloadViewMode === "raw" ? "查看解压内容" : "查看原始字节";
+  }
   elements.rawDetailsContent.textContent = fullDetails;
   elements.copyButton.disabled = false;
   renderDetails({ scrollActive: Boolean(elements.detailsSearchInput.value.trim()) });
@@ -1190,6 +1314,14 @@ elements.detailsSearchInput.addEventListener("keydown", (event) => {
   event.preventDefault();
   event.stopPropagation();
 });
+if (elements.payloadViewToggle) {
+  elements.payloadViewToggle.addEventListener("click", () => {
+    state.payloadViewMode = state.payloadViewMode === "raw" ? "decompressed" : "raw";
+    const event = state.eventById.get(state.selectedEventId);
+    if (event) selectEvent(event);
+  });
+}
+
 elements.copyButton.addEventListener("click", async () => {
   await navigator.clipboard.writeText(state.detailsCopyText);
   const label = elements.copyButton.querySelector("span");
@@ -1280,5 +1412,5 @@ globalThis.__MQTT_PANEL_ANALYSIS_SOURCE__ = Object.freeze({
   evictedCount: () => state.evictedCount,
   paused: () => state.paused,
   port,
-  version: () => extensionApi.runtime.getManifest?.().version || "0.8.6"
+  version: () => extensionApi.runtime.getManifest?.().version || "0.8.7"
 });

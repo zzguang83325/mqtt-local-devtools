@@ -41,6 +41,92 @@
   const strictTextDecoder = new TextDecoder("utf-8", { fatal: true });
   const MAX_TEXT_PREVIEW = 200000;
   const MAX_HEX_PREVIEW = 512;
+  // Compressed payloads are expanded lazily and bounded so a small frame cannot
+  // exhaust the panel with a decompression bomb.
+  const MAX_DECOMPRESSED_BYTES = 4 * 1024 * 1024;
+  const COMPRESSION_SIGNATURES = Object.freeze([
+    Object.freeze({ format: "gzip", stream: "gzip", bytes: [0x1f, 0x8b, 0x08] }),
+    Object.freeze({ format: "zlib", stream: "deflate", bytes: [0x78, 0x01] }),
+    Object.freeze({ format: "zlib", stream: "deflate", bytes: [0x78, 0x9c] }),
+    Object.freeze({ format: "zlib", stream: "deflate", bytes: [0x78, 0xda] })
+  ]);
+
+  function detectCompression(payload) {
+    if (!payload || payload.length < 3) return null;
+    for (const signature of COMPRESSION_SIGNATURES) {
+      if (signature.bytes.every((value, index) => payload[index] === value)) {
+        return signature;
+      }
+    }
+    return null;
+  }
+
+  async function inflateBytes(payload, streamFormat) {
+    const Decompression = globalObject.DecompressionStream;
+    if (typeof Decompression !== "function") {
+      return { error: "当前环境不支持 DecompressionStream" };
+    }
+    try {
+      const stream = new Blob([payload]).stream().pipeThrough(new Decompression(streamFormat));
+      const reader = stream.getReader();
+      const chunks = [];
+      let total = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_DECOMPRESSED_BYTES) {
+          await reader.cancel();
+          return { error: "解压后超过 4 MiB 上限", truncated: true };
+        }
+        chunks.push(value);
+      }
+      const merged = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return { bytes: merged };
+    } catch (error) {
+      // Some stream failures reject with an empty message; always keep a
+      // non-empty reason so callers can take the failure branch reliably.
+      const message = error instanceof Error ? error.message : String(error);
+      return { error: message || "压缩数据无法解压" };
+    }
+  }
+
+  // Returns a new packet object; the captured packet is never mutated so the
+  // original binary payload and hex preview stay available for export.
+  async function decompressPacket(packet) {
+    const signature = detectCompression(packet?.payloadBytes);
+    if (!signature) return packet;
+
+    const result = await inflateBytes(packet.payloadBytes, signature.stream);
+    const compression = {
+      format: signature.format,
+      compressedSize: packet.payloadBytes.length
+    };
+    if (result.error !== undefined) {
+      compression.error = result.error;
+      if (result.truncated) compression.truncated = true;
+      return { ...packet, compression };
+    }
+
+    const inflated = describePayload(result.bytes);
+    compression.decompressedSize = result.bytes.length;
+    return {
+      ...packet,
+      compression,
+      decompressed: {
+        text: inflated.payloadText,
+        encoding: inflated.payloadEncoding,
+        hex: inflated.payloadHex,
+        size: result.bytes.length,
+        truncated: inflated.payloadTruncated === true
+      }
+    };
+  }
 
   function asBytes(input) {
     if (input instanceof Uint8Array) return input;
@@ -122,6 +208,14 @@
     if (payload.length === 0) {
       description.payloadText = "";
       description.payloadEncoding = "utf-8";
+      return description;
+    }
+
+    // Keep the raw bytes only for compressed payloads; other binary frames keep
+    // the existing lightweight hex preview.
+    if (detectCompression(payload)) {
+      description.payloadEncoding = "binary";
+      description.payloadBytes = payload;
       return description;
     }
 
@@ -369,7 +463,15 @@
     return { packets, consumed: offset, protocolVersion: detectedProtocolVersion };
   }
 
-  const api = Object.freeze({ decodePacket, decodeMany, describePayload, PACKET_NAMES });
+  const api = Object.freeze({
+    decodePacket,
+    decodeMany,
+    describePayload,
+    decompressPacket,
+    detectCompression,
+    MAX_DECOMPRESSED_BYTES,
+    PACKET_NAMES
+  });
   globalObject.__MQTT_LOCAL_DEVTOOLS_DECODER__ = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : window);
